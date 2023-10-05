@@ -55,35 +55,71 @@ def csv_helper(file_name: str) -> Iterator[Stock]:
             yield Stock.from_list(row)
 
 
-@op
-def get_s3_data_op():
+@op(
+    config_schema={"s3_key": String}, 
+    out={
+        "stocks": Out(is_required=False, dagster_type=List[Stock]),
+        "empty_stocks": Out(is_required=False, dagster_type=Any),
+    }, 
+    description="Get a list of stocks from an S3 file"
+)
+def get_s3_data_op(context) -> List[Stock]:
+    file_name = context.op_config["s3_key"]
+    stock_data = list(csv_helper(file_name))
+    if len(stock_data) != 0:
+        yield Output(stock_data, "stocks")
+    else :
+        yield Output(None, "empty_stocks")
+
+
+@op(
+    config_schema={"nlargest": int}, 
+    out=DynamicOut(dagster_type=Aggregation), 
+    description="Given a list of stocks return the Aggregation with the greatest high value"
+)
+def process_data_op(context, stocks: List[Stock]) -> Aggregation:
+    N_values = context.op_config["nlargest"]
+    top_N_stocks = sorted(stocks, key=lambda stock: stock.high, reverse=True)[:N_values]
+    for i in range(len(top_N_stocks)):
+        _stock = top_N_stocks[i]
+        agg_stock = Aggregation(date=_stock.date, high=_stock.high)
+        yield DynamicOutput(agg_stock, mapping_key=str(i))
+
+@op(
+    out=Out(dagster_type=Nothing),
+    description="Upload an Aggregation to Redis"
+)
+def put_redis_data_op(aggregation: Aggregation) -> Nothing:
+    my_agg_stock = aggregation
     pass
 
 
-@op
-def process_data_op():
-    pass
-
-
-@op
-def put_redis_data_op():
-    pass
-
-
-@op
-def put_s3_data_op():
+@op(
+    out=Out(dagster_type=Nothing),
+    description="Upload an Aggregation to S3 file"
+)
+def put_s3_data_op(aggregation: Aggregation) -> Nothing:
+    my_agg_stock = aggregation
     pass
 
 
 @op(
     ins={"empty_stocks": In(dagster_type=Any)},
-    out=Out(Nothing),
-    description="Notifiy if stock list is empty",
+    out=Out(dagster_type=Nothing),
+    description="Notifiy if stock list is empty"
 )
 def empty_stock_notify_op(context: OpExecutionContext, empty_stocks: Any):
     context.log.info("No stocks returned")
 
 
-@job
+@job(
+    config={"ops":
+        {"get_s3_data_op": {"config": {"s3_key": "week_1/data/stock.csv"}},
+        "process_data_op": {"config": {"nlargest": 5}}}}
+)
 def machine_learning_dynamic_job():
-    pass
+    stocks, empty_stocks = get_s3_data_op()
+    empty_stock_notify_op(empty_stocks)
+    dynamic_stocks = process_data_op(stocks)
+    dynamic_stocks.map(put_redis_data_op)
+    dynamic_stocks.map(put_s3_data_op)

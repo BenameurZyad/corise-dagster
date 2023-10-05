@@ -10,7 +10,10 @@ from dagster import (
     String,
     job,
     op,
+    graph,
     usable_as_dagster_type,
+    DynamicOut, 
+    DynamicOutput
 )
 from pydantic import BaseModel
 
@@ -50,26 +53,45 @@ def csv_helper(file_name: str) -> Iterator[Stock]:
             yield Stock.from_list(row)
 
 
-@op
-def get_s3_data_op():
+@op(config_schema={"s3_key": String}, 
+    out={"stocks": Out(dagster_type=List[Stock])}, 
+    description="Get a list of stocks from an S3 file",
+    tags={"category": "s3"})
+def get_s3_data_op(context) -> List[Stock]:
+    file_name = context.op_config["s3_key"]
+    stock_data = list(csv_helper(file_name))
+    return stock_data
+
+
+@op(out={"aggregation": Out(dagster_type=Aggregation)}, 
+    description="Given a list of stocks return the Aggregation with the greatest high value")
+def process_data_op(stocks: List[Stock]) -> Aggregation:
+    max_high = max(stocks, key=lambda x: x.high)
+    agg_stock = Aggregation(date=max_high.date, high=max_high.high)
+    return agg_stock
+
+
+@op(
+    #out=Out(Nothing),
+    description="Upload an Aggregation to Redis",
+    tags={"category": "redis"})
+def put_redis_data_op(aggregation: Aggregation) -> Nothing:
+    my_agg_stock = aggregation
     pass
 
 
-@op
-def process_data_op():
+@op(
+    #out=Out(Nothing),
+    description="Upload an Aggregation to S3 file",
+    tags={"category": "s3"})
+def put_s3_data_op(aggregation: Aggregation) -> Nothing:
+    my_agg_stock = aggregation
     pass
 
 
-@op
-def put_redis_data_op():
-    pass
-
-
-@op
-def put_s3_data_op():
-    pass
-
-
-@job
+@job(config={"ops": {"get_s3_data_op": {"config": {"s3_key": "week_1/data/stock.csv"}}}})
 def machine_learning_job():
-    pass
+    my_data = process_data_op(get_s3_data_op())
+    put_redis_data_op(my_data)
+    put_s3_data_op(my_data)
+
