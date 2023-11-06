@@ -65,7 +65,7 @@ class Redis:
     def put_data(self, name: str, value: str):
         # Occasional error
         if randint(0, 1) == 0:
-            raise Exception("Injected occasional error")
+            raise Exception("Injected occasional error on purpose to test the retry policy...")
         self.client.set(name, value)
 
 
